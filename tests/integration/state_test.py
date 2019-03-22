@@ -209,6 +209,108 @@ class ProjectWithDependenciesTest(ProjectTestCase):
         }
 
 
+class ProjectWithDependsOnDependenciesTest(ProjectTestCase):
+    def setUp(self):
+        super(ProjectWithDependsOnDependenciesTest, self).setUp()
+
+        self.cfg = {
+            'version': '2',
+            'services': {
+                'db': {
+                    'image': 'busybox:latest',
+                    'command': 'tail -f /dev/null',
+                },
+                'web': {
+                    'image': 'busybox:latest',
+                    'command': 'tail -f /dev/null',
+                    'depends_on': ['db'],
+                },
+                'nginx': {
+                    'image': 'busybox:latest',
+                    'command': 'tail -f /dev/null',
+                    'depends_on': ['web'],
+                },
+            }
+        }
+
+    def test_up(self):
+        containers = self.run_up(self.cfg)
+        assert set(c.service for c in containers) == set(['db', 'web', 'nginx'])
+
+    def test_change_leaf(self):
+        old_containers = self.run_up(self.cfg)
+
+        self.cfg['services']['nginx']['environment'] = {'NEW_VAR': '1'}
+        new_containers = self.run_up(self.cfg)
+
+        assert set(c.service for c in new_containers - old_containers) == set(['nginx'])
+
+    def test_change_middle(self):
+        old_containers = self.run_up(self.cfg)
+
+        self.cfg['services']['web']['environment'] = {'NEW_VAR': '1'}
+        new_containers = self.run_up(self.cfg)
+
+        assert set(c.service for c in new_containers - old_containers) == set(['web'])
+
+    def test_change_middle_always_recreate_deps(self):
+        old_containers = self.run_up(self.cfg, always_recreate_deps=True)
+
+        self.cfg['services']['web']['environment'] = {'NEW_VAR': '1'}
+        new_containers = self.run_up(self.cfg, always_recreate_deps=True)
+
+        assert set(c.service for c in new_containers - old_containers) == {'web', 'nginx'}
+
+    def test_change_root(self):
+        old_containers = self.run_up(self.cfg)
+
+        self.cfg['services']['db']['environment'] = {'NEW_VAR': '1'}
+        new_containers = self.run_up(self.cfg)
+
+        assert set(c.service for c in new_containers - old_containers) == set(['db'])
+
+    def test_change_root_always_recreate_deps(self):
+        old_containers = self.run_up(self.cfg, always_recreate_deps=True)
+
+        self.cfg['services']['db']['environment'] = {'NEW_VAR': '1'}
+        new_containers = self.run_up(self.cfg, always_recreate_deps=True)
+
+        assert set(c.service for c in new_containers - old_containers) == {
+            'db', 'web', 'nginx'
+        }
+
+    def test_change_root_no_recreate(self):
+        old_containers = self.run_up(self.cfg)
+
+        self.cfg['services']['db']['environment'] = {'NEW_VAR': '1'}
+        new_containers = self.run_up(
+            self.cfg,
+            strategy=ConvergenceStrategy.never)
+
+        assert new_containers - old_containers == set()
+
+    def test_service_removed_while_down(self):
+        next_cfg = {
+            'version': '2',
+            'services': {
+                'web': {
+                    'image': 'busybox:latest',
+                    'command': 'tail -f /dev/null',
+                },
+                'nginx': self.cfg['services']['nginx'],
+            }
+        }
+
+        containers = self.run_up(self.cfg)
+        assert len(containers) == 3
+
+        project = self.make_project(self.cfg)
+        project.stop(timeout=1)
+
+        containers = self.run_up(next_cfg)
+        assert len(containers) == 2
+
+
 class ServiceStateTest(DockerClientTestCase):
     """Test cases for Service.convergence_plan."""
 
