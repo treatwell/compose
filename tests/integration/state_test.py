@@ -5,6 +5,8 @@ by `docker-compose up`.
 from __future__ import absolute_import
 from __future__ import unicode_literals
 
+import copy
+
 import py
 from docker.errors import ImageNotFound
 
@@ -234,81 +236,118 @@ class ProjectWithDependsOnDependenciesTest(ProjectTestCase):
         }
 
     def test_up(self):
-        containers = self.run_up(self.cfg)
+        local_cfg = copy.deepcopy(self.cfg)
+        containers = self.run_up(local_cfg)
         assert set(c.service for c in containers) == set(['db', 'web', 'nginx'])
 
     def test_change_leaf(self):
-        old_containers = self.run_up(self.cfg)
+        local_cfg = copy.deepcopy(self.cfg)
+        old_containers = self.run_up(local_cfg)
 
-        self.cfg['services']['nginx']['environment'] = {'NEW_VAR': '1'}
-        new_containers = self.run_up(self.cfg)
+        local_cfg['services']['nginx']['environment'] = {'NEW_VAR': '1'}
+        new_containers = self.run_up(local_cfg)
 
         assert set(c.service for c in new_containers - old_containers) == set(['nginx'])
 
     def test_change_middle(self):
-        old_containers = self.run_up(self.cfg)
+        local_cfg = copy.deepcopy(self.cfg)
+        old_containers = self.run_up(local_cfg)
 
-        self.cfg['services']['web']['environment'] = {'NEW_VAR': '1'}
-        new_containers = self.run_up(self.cfg)
+        local_cfg['services']['web']['environment'] = {'NEW_VAR': '1'}
+        new_containers = self.run_up(local_cfg)
 
         assert set(c.service for c in new_containers - old_containers) == set(['web'])
 
     def test_change_middle_always_recreate_deps(self):
-        old_containers = self.run_up(self.cfg, always_recreate_deps=True)
+        local_cfg = copy.deepcopy(self.cfg)
+        old_containers = self.run_up(local_cfg, always_recreate_deps=True)
 
-        self.cfg['services']['web']['environment'] = {'NEW_VAR': '1'}
-        new_containers = self.run_up(self.cfg, always_recreate_deps=True)
+        local_cfg['services']['web']['environment'] = {'NEW_VAR': '1'}
+        new_containers = self.run_up(local_cfg, always_recreate_deps=True)
 
-        assert set(c.service for c in new_containers - old_containers) == {'web', 'nginx'}
+        assert set(c.service for c in new_containers - old_containers) == set(['web', 'nginx'])
 
     def test_change_root(self):
-        old_containers = self.run_up(self.cfg)
+        local_cfg = copy.deepcopy(self.cfg)
+        old_containers = self.run_up(local_cfg)
 
-        self.cfg['services']['db']['environment'] = {'NEW_VAR': '1'}
-        new_containers = self.run_up(self.cfg)
+        local_cfg['services']['db']['environment'] = {'NEW_VAR': '1'}
+        new_containers = self.run_up(local_cfg)
 
         assert set(c.service for c in new_containers - old_containers) == set(['db'])
 
     def test_change_root_always_recreate_deps(self):
-        old_containers = self.run_up(self.cfg, always_recreate_deps=True)
+        local_cfg = copy.deepcopy(self.cfg)
+        old_containers = self.run_up(local_cfg, always_recreate_deps=True)
 
-        self.cfg['services']['db']['environment'] = {'NEW_VAR': '1'}
-        new_containers = self.run_up(self.cfg, always_recreate_deps=True)
+        local_cfg['services']['db']['environment'] = {'NEW_VAR': '1'}
+        new_containers = self.run_up(local_cfg, always_recreate_deps=True)
 
         assert set(c.service for c in new_containers - old_containers) == {
             'db', 'web', 'nginx'
         }
 
     def test_change_root_no_recreate(self):
-        old_containers = self.run_up(self.cfg)
+        local_cfg = copy.deepcopy(self.cfg)
+        old_containers = self.run_up(local_cfg)
 
-        self.cfg['services']['db']['environment'] = {'NEW_VAR': '1'}
+        local_cfg['services']['db']['environment'] = {'NEW_VAR': '1'}
         new_containers = self.run_up(
-            self.cfg,
+            local_cfg,
             strategy=ConvergenceStrategy.never)
 
         assert new_containers - old_containers == set()
 
     def test_service_removed_while_down(self):
-        next_cfg = {
-            'version': '2',
-            'services': {
-                'web': {
-                    'image': 'busybox:latest',
-                    'command': 'tail -f /dev/null',
-                },
-                'nginx': self.cfg['services']['nginx'],
-            }
-        }
+        local_cfg = copy.deepcopy(self.cfg)
+        next_cfg = copy.deepcopy(self.cfg)
+        del next_cfg['services']['db']
+        del next_cfg['services']['web']['depends_on']
 
-        containers = self.run_up(self.cfg)
-        assert len(containers) == 3
+        containers = self.run_up(local_cfg)
+        assert set(c.service for c in containers) == set(['db', 'web', 'nginx'])
 
-        project = self.make_project(self.cfg)
+        project = self.make_project(local_cfg)
         project.stop(timeout=1)
 
-        containers = self.run_up(next_cfg)
-        assert len(containers) == 2
+        next_containers = self.run_up(next_cfg)
+        assert set(c.service for c in next_containers) == set(['web', 'nginx'])
+
+    def test_service_removed_while_up(self):
+        local_cfg = copy.deepcopy(self.cfg)
+        containers = self.run_up(local_cfg)
+        assert set(c.service for c in containers) == set(['db', 'web', 'nginx'])
+
+        del local_cfg['services']['db']
+        del local_cfg['services']['web']['depends_on']
+
+        containers = self.run_up(local_cfg)
+        assert set(c.service for c in containers) == set(['web', 'nginx'])
+
+    def test_dependency_removed(self):
+        local_cfg = copy.deepcopy(self.cfg)
+        next_cfg = copy.deepcopy(self.cfg)
+        del next_cfg['services']['nginx']['depends_on']
+
+        containers = self.run_up(local_cfg, service_names=['nginx'])
+        assert set(c.service for c in containers) == set(['db', 'web', 'nginx'])
+
+        project = self.make_project(local_cfg)
+        project.stop(timeout=1)
+
+        next_containers = self.run_up(next_cfg, service_names=['nginx'])
+        assert set(c.service for c in next_containers if c.is_running) == set(['nginx'])
+
+    def test_dependency_added(self):
+        local_cfg = copy.deepcopy(self.cfg)
+
+        del local_cfg['services']['nginx']['depends_on']
+        containers = self.run_up(local_cfg, service_names=['nginx'])
+        assert set(c.service for c in containers) == set(['nginx'])
+
+        local_cfg['services']['nginx']['depends_on'] = ['db']
+        containers = self.run_up(local_cfg, service_names=['nginx'])
+        assert set(c.service for c in containers) == set(['nginx', 'db'])
 
 
 class ServiceStateTest(DockerClientTestCase):
